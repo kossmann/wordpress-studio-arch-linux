@@ -55,6 +55,25 @@ check_vendor_url() {
   [[ "$1" == "https://$VENDOR_HOST/"* ]] || die "URL is not on https://$VENDOR_HOST/: $1"
 }
 
+# pacman installs package contents as root, so the vendor tree is not copied
+# blindly: a tampered .deb must not be able to drop files elsewhere on the
+# system (/etc/sudoers.d, /usr/bin/...) or ship extra setuid binaries.
+#  - only paths Studio legitimately uses are allowed; anything else aborts
+#  - only regular files, directories and symlinks
+#  - every setuid/setgid bit and world-writable mode is stripped; the one
+#    setuid file Studio needs (chrome-sandbox) is re-added in package()
+ALLOWED_PATHS='^usr(/bin(/studio)?|/lib(/studio(/.*)?)?|/share(/applications(/studio\.desktop)?|/pixmaps(/studio\.(png|svg))?|/doc(/studio(/.*)?)?)?)?$'
+sanitize_tree() {
+  local root="$1" bad
+  rm -rf "$root/usr/share/lintian"   # Debian-only metadata
+  bad=$(cd "$root" && find . -mindepth 1 -printf '%P\n' | grep -Ev "$ALLOWED_PATHS" || true)
+  [[ -z "$bad" ]] || die "vendor .deb contains unexpected paths - refusing to package:"$'\n'"$(head -n 20 <<<"$bad")"
+  bad=$(find "$root" -mindepth 1 ! -type f ! -type d ! -type l -printf '%P\n')
+  [[ -z "$bad" ]] || die "vendor .deb contains special files: $bad"
+  [[ -f "$root/usr/lib/studio/studio" ]] || die "vendor .deb has no usr/lib/studio/studio"
+  find "$root" ! -type l \( -perm /6000 -o -perm -0002 \) -exec chmod ug-s,o-w {} +
+}
+
 cmd_resolve() {
   local work; work=$(mktemp -d); trap 'rm -rf "$work"' RETURN
 
@@ -107,6 +126,7 @@ cmd_build() {
     *)     tar -C "$build/pkgroot" -xf "$work/$data" ;;
   esac
   rm -f "$work/pkg.deb" "$work/$data"   # free disk space before packaging
+  sanitize_tree "$build/pkgroot"
 
   # The .deb's postinst grants the bundled node CAP_NET_BIND_SERVICE so
   # Studio's proxy can bind 80/443 for custom-domain sites.
