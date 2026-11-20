@@ -47,16 +47,26 @@ Then remove the `[wordpress-studio]` section from `/etc/pacman.conf`. To remove 
 
 ## How it works
 
-The [daily workflow](.github/workflows/build.yml) runs in an `archlinux:base-devel` container and uses no third-party Actions:
+The [daily workflow](.github/workflows/build.yml) has two jobs. Each runs on its own fresh VM and gets only the permissions it needs:
 
-1. [`build.sh resolve`](build.sh) follows Automattic's "latest" link (`appscdn.wordpress.com`) and reads only the first 512 KB of the `.deb` to get the version.
-2. If that version is already published, the run stops.
-3. Otherwise it downloads the `.deb` and extracts it. It then builds a pacman package from a PKGBUILD it generates itself. That PKGBUILD only copies the vendor files into place and never runs vendor code during the build. The package reproduces what the `.deb` sets up at install time: the setuid `chrome-sandbox`, and `cap_net_bind_service` on the bundled `node`, so custom domains can use ports 80/443.
-4. [`ci.sh`](ci.sh) signs the package and the repo database, then uploads them to the [`repo` release](https://github.com/kossmann/wordpress-studio-arch-linux/releases/tag/repo). The release notes record the vendor URL and the `.deb`'s sha256.
+1. **`build`** runs in an `archlinux:base-devel` container with **no secrets** and a read-only token. This is the only job that handles Automattic's `.deb`.
+   - [`build.sh resolve`](build.sh) follows the vendor's "latest" link over HTTPS only (redirects included) and checks that it ends up on `appscdn.wordpress.com`. It reads only the first 512 KB of the `.deb` to get the version.
+   - [`ci-build.sh`](ci-build.sh) compares the full vendor version with the one already published. If only the Debian revision changed, or a rebuild was forced, it bumps `pkgrel` so pacman treats it as an upgrade.
+   - It then builds the package from a PKGBUILD it generates itself. That PKGBUILD only copies the vendor files into place and never runs vendor code. It also builds an **unsigned** repo database.
+2. **`publish`** holds the signing key and a write token. [`ci-publish.sh`](ci-publish.sh) never parses the package: it checks file names, confirms the database references the package's sha256, signs the files with gpg and uploads them to the [`repo` release](https://github.com/kossmann/wordpress-studio-arch-linux/releases/tag/repo).
+
+The workflow uses no third-party Actions. GitHub's own artifact actions, pinned to commit SHAs, pass the build from one job to the other.
+
+### Privileges the package grants
+
+These copy what Automattic's own `.deb` sets up when it installs:
+
+- `/usr/lib/studio/chrome-sandbox` is **setuid root**. Electron needs this for its sandbox on systems without unprivileged user namespaces.
+- `/usr/lib/studio/resources/bin/node` gets **`cap_net_bind_service`**, so Studio's proxy can serve custom domains on ports 80/443. Note that this applies to *any* script run with that `node` binary, which means any local user can bind ports below 1024 through it. If you don't use custom domains, you can remove it with `sudo setcap -r /usr/lib/studio/resources/bin/node`. Each upgrade puts it back.
 
 ## Trust model
 
-The binary is Automattic's own release. Automattic doesn't sign it, so the only check on what comes from them is HTTPS to their CDN. By using this repo you also trust this GitHub repository, its Actions runs and its signing key. Everything that runs is in this repo, so you can read it all.
+The binary is Automattic's own release. Automattic doesn't sign it or publish checksums, so the only check on what comes from them is HTTPS to their CDN. By using this repo you also trust this GitHub repository, its Actions runs (including the `archlinux:base-devel` image and Arch's packages used to build) and its signing key. Everything that runs is in this repo, so you can read it all.
 
 Not affiliated with Automattic or WordPress.com.
 
@@ -64,4 +74,4 @@ Not affiliated with Automattic or WordPress.com.
 
 - **Signing key:** repo secret `GPG_PRIVATE_KEY`. The maintainer keeps an offline backup.
 - **Force a rebuild:** Actions → *Build WordPress Studio package* → *Run workflow* → tick **force**.
-- **Build locally:** `./build.sh resolve`, then `./build.sh build <url> <debver> ./out`.
+- **Build locally:** `./build.sh resolve`, then `./build.sh build <url> <debver> 1 ./out`.

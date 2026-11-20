@@ -6,13 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: Rebuild even if this version is already published
+        description: Rebuild (pkgrel+1) even if this version is already published
         type: boolean
         default: false
 
-permissions:
-  contents: write   # upload release assets
-  actions: write    # re-enable the schedule (see last step)
+# Nothing by default; each job asks for only what it needs.
+permissions: {}
 
 concurrency:
   group: build
@@ -23,31 +22,78 @@ defaults:
     shell: bash
 
 jobs:
+  # Handles the untrusted vendor .deb. No secrets, read-only token.
   build:
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      publish: ${{ steps.build.outputs.publish }}
+      pkgfile: ${{ steps.build.outputs.pkgfile }}
+      url: ${{ steps.build.outputs.url }}
     steps:
-      # No third-party actions: everything below is plain shell you can read.
       - name: Install tools
-        run: pacman -Syu --noconfirm --needed git github-cli binutils
+        run: pacman -Syu --noconfirm --needed git binutils
 
       - name: Check out
         run: |
           git clone --quiet "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" src
           git -C src checkout --quiet "$GITHUB_SHA"
 
-      - name: Build and publish
+      - name: Build (unsigned)
+        id: build
+        env:
+          FORCE: ${{ inputs.force || 'false' }}
+        run: src/ci-build.sh
+
+      - name: Hand the build to the publish job
+        if: steps.build.outputs.publish == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: repo
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
+
+  # Holds the signing key and write token. Fresh VM; never parses vendor content.
+  publish:
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Check out
+        run: |
+          git clone --quiet "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" src
+          git -C src checkout --quiet "$GITHUB_SHA"
+
+      - name: Fetch the build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: repo
+          path: out
+
+      - name: Sign and publish
         env:
           GH_TOKEN: ${{ github.token }}
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          FORCE: ${{ inputs.force || 'false' }}
-        run: src/ci.sh
+          PKGFILE: ${{ needs.build.outputs.pkgfile }}
+          SRC_URL: ${{ needs.build.outputs.url }}
+          OUT: out
+        run: src/ci-publish.sh
 
-      # GitHub disables scheduled workflows after 60 days without repo
-      # activity. Re-enabling on every scheduled run keeps it going.
-      - name: Keep the schedule alive
-        if: github.event_name == 'schedule'
+  # GitHub disables scheduled workflows after 60 days without repo activity.
+  keepalive:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Re-enable the schedule
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/enable"

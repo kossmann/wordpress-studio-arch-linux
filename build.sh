@@ -3,9 +3,12 @@
 # package. No AUR maintainer, no third-party code: the generated PKGBUILD only
 # copies the extracted vendor tree into place.
 #
-#   build.sh resolve                      print url=/debver=/pkgver= for the latest release
-#   build.sh build <url> <debver> <outdir> download that .deb and build the package into <outdir>
+#   build.sh resolve                               print url=/debver=/pkgver= for the latest release
+#   build.sh build <url> <debver> <pkgrel> <outdir> download that .deb and build the package into <outdir>
 set -euo pipefail
+
+# HTTPS only, including every redirect hop.
+CURL=(curl -fsSL --proto '=https' --proto-redir '=https' --max-redirs 5)
 
 LATEST_URL="https://appscdn.wordpress.com/downloads/wordpress-com-studio/linux-x64/latest/update"
 VENDOR_HOST="appscdn.wordpress.com"
@@ -37,8 +40,20 @@ read_control() {
 
 control_field() { awk -F': ' -v f="$1" '$1==f{print $2; exit}' "$2"; }
 
-# pacman pkgver: drop epoch and Debian revision, keep [A-Za-z0-9._].
-to_pkgver() { printf '%s' "$1" | sed -E 's/^[0-9]+://; s/-.*$//; s/[^A-Za-z0-9._]/_/g'; }
+# pacman pkgver = the Debian upstream version (revision after the last '-'
+# dropped), restricted to [A-Za-z0-9._]. A changed Debian revision with the
+# same upstream version is not lost: the CI compares the full Debian version
+# and bumps pkgrel. Epochs are refused (they'd need a pacman epoch and a ':'
+# in the file name, which GitHub release assets can't hold) - handle by hand.
+to_pkgver() {
+  [[ "$1" != *:* ]] || die "Debian version '$1' has an epoch - not supported automatically"
+  local up="$1"; [[ "$up" == *-* ]] && up="${up%-*}"
+  printf '%s' "$up" | sed -E 's/[^A-Za-z0-9._]/_/g'
+}
+
+check_vendor_url() {
+  [[ "$1" == "https://$VENDOR_HOST/"* ]] || die "URL is not on https://$VENDOR_HOST/: $1"
+}
 
 cmd_resolve() {
   local work; work=$(mktemp -d); trap 'rm -rf "$work"' RETURN
@@ -46,9 +61,9 @@ cmd_resolve() {
   # Resolve "latest" to the concrete versioned URL once, so the version we
   # check and the file we later download cannot differ mid-run.
   local url
-  url=$(curl -fsSL -r 0-524287 -o "$work/head.bin" -w '%{url_effective}' "$LATEST_URL") \
+  url=$("${CURL[@]}" -r 0-524287 -o "$work/head.bin" -w '%{url_effective}' "$LATEST_URL") \
     || die "could not fetch $LATEST_URL"
-  [[ "$url" == "https://$VENDOR_HOST/"* ]] || die "latest URL redirected off the vendor host: $url"
+  check_vendor_url "$url"
 
   read_control "$work/head.bin" "$work/control"
   local pkg ver
@@ -61,14 +76,17 @@ cmd_resolve() {
 }
 
 cmd_build() {
-  local url="$1" debver="$2" outdir="$3"
-  [[ "$url" == "https://$VENDOR_HOST/"* ]] || die "refusing non-vendor URL: $url"
+  local url="$1" debver="$2" pkgrel="$3" outdir="$4"
+  check_vendor_url "$url"
+  [[ "$pkgrel" =~ ^[1-9][0-9]*$ ]] || die "bad pkgrel '$pkgrel'"
   mkdir -p "$outdir"; outdir=$(cd "$outdir" && pwd)
 
   local work; work=$(mktemp -d); trap 'rm -rf "$work"' RETURN
 
   log "downloading $url"
-  curl -fsSL "$url" -o "$work/pkg.deb"
+  local final
+  final=$("${CURL[@]}" -o "$work/pkg.deb" -w '%{url_effective}' "$url") || die "download failed"
+  check_vendor_url "$final"
   local sha; sha=$(sha256sum "$work/pkg.deb" | awk '{print $1}')
   log "vendor .deb sha256: $sha"
 
@@ -110,7 +128,7 @@ EOF
 # sha256: $sha
 pkgname='$PKG_NAME'
 pkgver='$(to_pkgver "$debver")'
-pkgrel=1
+pkgrel='$pkgrel'
 pkgdesc="$PKG_DESC"
 arch=('x86_64')
 url="$PKG_URL"
@@ -139,6 +157,6 @@ EOF
 
 case "${1:-}" in
   resolve) cmd_resolve ;;
-  build)   [[ $# -eq 4 ]] || die "usage: build.sh build <url> <debver> <outdir>"; cmd_build "$2" "$3" "$4" ;;
-  *)       die "usage: build.sh resolve | build <url> <debver> <outdir>" ;;
+  build)   [[ $# -eq 5 ]] || die "usage: build.sh build <url> <debver> <pkgrel> <outdir>"; cmd_build "$2" "$3" "$4" "$5" ;;
+  *)       die "usage: build.sh resolve | build <url> <debver> <pkgrel> <outdir>" ;;
 esac
