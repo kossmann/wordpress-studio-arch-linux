@@ -10,8 +10,9 @@ set -euo pipefail
 LATEST_URL="https://appscdn.wordpress.com/downloads/wordpress-com-studio/linux-x64/latest/update"
 VENDOR_HOST="appscdn.wordpress.com"
 
-PKG_NAME="studio"
-PKG_DESC="Fast, free local WordPress development environment (WordPress.com Studio)"
+DEB_PKG="studio"                 # Package: field in Automattic's .deb
+PKG_NAME="wordpress-studio-bin"  # -bin: repackaged vendor binary (Arch convention)
+PKG_DESC="WordPress.com Studio, local WordPress development environment (unofficial repackage of Automattic's .deb)"
 PKG_URL="https://developer.wordpress.com/studio/"
 PKG_LICENSE="GPL-2.0-or-later"
 # Arch equivalents of the .deb's Depends.
@@ -53,7 +54,7 @@ cmd_resolve() {
   local pkg ver
   pkg=$(control_field Package "$work/control/control")
   ver=$(control_field Version "$work/control/control")
-  [[ "$pkg" == "$PKG_NAME" ]] || die "unexpected Package '$pkg' in .deb (expected $PKG_NAME)"
+  [[ "$pkg" == "$DEB_PKG" ]] || die "unexpected Package '$pkg' in .deb (expected $DEB_PKG)"
   [[ -n "$ver" ]] || die "no Version in .deb control file"
 
   printf 'url=%s\ndebver=%s\npkgver=%s\n' "$url" "$ver" "$(to_pkgver "$ver")"
@@ -115,6 +116,9 @@ arch=('x86_64')
 url="$PKG_URL"
 license=('$PKG_LICENSE')
 depends=($deps)
+provides=('wordpress-studio' 'studio')
+conflicts=('wordpress-studio' 'wordpress-studio-git' 'studio')
+replaces=('studio')
 install='$PKG_NAME.install'
 options=('!strip' '!debug' '!emptydirs' '!lto')
 

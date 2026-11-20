@@ -1,7 +1,7 @@
 # WordPress Studio for Arch Linux
 
-A signed pacman repository for [WordPress.com Studio](https://developer.wordpress.com/studio/),
-rebuilt daily from Automattic's official `.deb`. Once you add it, Studio updates
+An **unofficial** signed pacman repository for [WordPress.com Studio](https://developer.wordpress.com/studio/),
+rebuilt daily from Automattic's official `.deb`. The package is `wordpress-studio-bin`. Once you add it, Studio updates
 come with a normal `sudo pacman -Syu`.
 
 ## Install
@@ -27,15 +27,19 @@ Server = https://github.com/kossmann/wordpress-studio-arch-linux/releases/downlo
 **3. Install:**
 
 ```bash
-sudo pacman -Sy studio
+sudo pacman -Syu wordpress-studio-bin
 ```
+
+(Always use `-Syu` here. A bare `-Sy <pkg>` is a partial upgrade, which Arch doesn't support.)
+
+If you already have a package called `studio` installed (for example one you built yourself from the `.deb`), the next `-Syu` will offer to replace it with `wordpress-studio-bin`.
 
 After that, updates come in with `sudo pacman -Syu`.
 
 ### Uninstall
 
 ```bash
-sudo pacman -Rns studio
+sudo pacman -Rns wordpress-studio-bin
 ```
 
 Then remove the `[wordpress-studio]` section from `/etc/pacman.conf`. To remove the key as well, run

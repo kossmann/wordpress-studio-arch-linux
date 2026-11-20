@@ -14,7 +14,7 @@ set -euo pipefail
 
 REPO_DB="wordpress-studio"   # the [section] name in pacman.conf
 TAG="repo"
-PKG_NAME="studio"
+PKG_NAME="wordpress-studio-bin"
 
 here=$(cd "$(dirname "$0")" && pwd)
 dry() { [[ "${DRY_RUN:-}" == 1 ]]; }
@@ -84,7 +84,9 @@ gh release upload "$TAG" "${R[@]}" --clobber "$up/$pkgfile" "$up/$pkgfile.sig"
 gh release upload "$TAG" "${R[@]}" --clobber \
   "$up/$REPO_DB.db" "$up/$REPO_DB.db.sig" "$up/$REPO_DB.files" "$up/$REPO_DB.files.sig"
 while read -r a; do
-  [[ "$a" == "$PKG_NAME-"*.pkg.tar.zst* && "$a" != "$pkgfile" && "$a" != "$pkgfile.sig" ]] || continue
+  # Any package other than the current one (also catches the pre-rename studio-* files).
+  [[ "$a" == *.pkg.tar.zst || "$a" == *.pkg.tar.zst.sig ]] || continue
+  [[ "$a" != "$pkgfile" && "$a" != "$pkgfile.sig" ]] || continue
   log "removing old asset $a"
   gh release delete-asset "$TAG" "$a" "${R[@]}" --yes
 done <<<"$assets"
