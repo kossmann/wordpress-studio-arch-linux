@@ -1,0 +1,53 @@
+name: Build WordPress Studio package
+
+on:
+  schedule:
+    - cron: "23 7 * * *"   # daily, 07:23 UTC
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild even if this version is already published
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # upload release assets
+  actions: write    # re-enable the schedule (see last step)
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    timeout-minutes: 45
+    steps:
+      # No third-party actions: everything below is plain shell you can read.
+      - name: Install tools
+        run: pacman -Syu --noconfirm --needed git github-cli binutils
+
+      - name: Check out
+        run: |
+          git clone --quiet "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" src
+          git -C src checkout --quiet "$GITHUB_SHA"
+
+      - name: Build and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          FORCE: ${{ inputs.force || 'false' }}
+        run: src/ci.sh
+
+      # GitHub disables scheduled workflows after 60 days without repo
+      # activity. Re-enabling on every scheduled run keeps it going.
+      - name: Keep the schedule alive
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/enable"

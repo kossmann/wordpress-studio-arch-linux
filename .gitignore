@@ -1,0 +1,3 @@
+out/
+*.pkg.tar.zst
+*.private.asc
