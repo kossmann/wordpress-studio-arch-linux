@@ -6,6 +6,7 @@
 #   build.sh resolve                               print url=/debver=/pkgver= for the latest release
 #   build.sh build <url> <debver> <pkgrel> <outdir> download that .deb and build the package into <outdir>
 set -euo pipefail
+umask 022   # file modes in the package must not depend on the caller's umask
 
 # HTTPS only, including every redirect hop.
 CURL=(curl -fsSL --proto '=https' --proto-redir '=https' --max-redirs 5)
@@ -120,12 +121,20 @@ cmd_build() {
   local data; data=$(cd "$work" && ls data.tar.* 2>/dev/null | head -n1)
   [[ -n "$data" ]] || die "no data archive in .deb"
   case "$data" in
-    *.xz)  tar -C "$build/pkgroot" -xJf "$work/$data" ;;
-    *.gz)  tar -C "$build/pkgroot" -xzf "$work/$data" ;;
-    *.zst) tar -C "$build/pkgroot" -x --zstd -f "$work/$data" ;;
-    *)     tar -C "$build/pkgroot" -xf "$work/$data" ;;
+    *.xz)  tar -C "$build/pkgroot" -p -xJf "$work/$data" ;;
+    *.gz)  tar -C "$build/pkgroot" -p -xzf "$work/$data" ;;
+    *.zst) tar -C "$build/pkgroot" -p -x --zstd -f "$work/$data" ;;
+    *)     tar -C "$build/pkgroot" -p -xf "$work/$data" ;;
   esac
   rm -f "$work/pkg.deb" "$work/$data"   # free disk space before packaging
+  # Reproducibility: makepkg clamps every mtime and the builddate to
+  # SOURCE_DATE_EPOCH. Derive it from the vendor files themselves so any
+  # rebuild of the same .deb (see verify.sh) gets the same value.
+  local epoch
+  epoch=$(find "$build/pkgroot" -type f -printf '%T@\n' | sort -n | tail -n1 | cut -d. -f1)
+  [[ "$epoch" =~ ^[0-9]+$ ]] || die "could not derive SOURCE_DATE_EPOCH"
+  # Regular files only, and before sanitize_tree: directory mtimes change
+  # when tar creates or sanitize_tree deletes entries.
   sanitize_tree "$build/pkgroot"
 
   # The .deb's postinst grants the bundled node CAP_NET_BIND_SERVICE so
@@ -158,7 +167,8 @@ provides=('wordpress-studio' 'studio')
 conflicts=('wordpress-studio' 'wordpress-studio-git' 'studio')
 replaces=('studio')
 install='$PKG_NAME.install'
-options=('!strip' '!debug' '!emptydirs' '!lto')
+# All packaging options explicit: vendor files are kept exactly as shipped.
+options=('!strip' '!debug' '!lto' 'docs' 'emptydirs' '!libtool' '!staticlibs' '!zipman' '!purge' '!pestrip' '!zipkmod')
 
 package() {
   cp -a "\$startdir/pkgroot/." "\$pkgdir/"
@@ -168,8 +178,25 @@ package() {
 EOF
   log "generated PKGBUILD:"; sed 's/^/    /' "$build/PKGBUILD" >&2
 
+  # Our own makepkg.conf: with --config, neither /etc/makepkg.conf(.d) nor the
+  # builder's ~/.config/pacman/makepkg.conf is read, so nobody's local
+  # settings can change the package contents (see verify.sh).
+  cat > "$build/makepkg.conf" <<'CONF'
+CARCH="x86_64"
+CHOST="x86_64-pc-linux-gnu"
+BUILDENV=(!distcc !color !ccache !check !sign)
+OPTIONS=(!strip docs !libtool !staticlibs emptydirs !zipman !purge !debug !lto !autodeps)
+INTEGRITY_CHECK=(sha256)
+DOC_DIRS=(usr/{,local/}{,share/}{doc,gtk-doc} opt/*/{doc,gtk-doc})
+PURGE_TARGETS=()
+COMPRESSZST=(zstd -c -T0 -)
+PKGEXT='.pkg.tar.zst'
+SRCEXT='.src.tar.gz'
+CONF
+
   log "building package"
-  ( cd "$build" && PKGDEST="$outdir" makepkg --force --nodeps --noconfirm )
+  ( cd "$build" && env -u MAKEFLAGS SOURCE_DATE_EPOCH="$epoch" PACKAGER="wordpress-studio-arch-linux <ci@invalid>" \
+      PKGDEST="$outdir" makepkg --config "$build/makepkg.conf" --force --nodeps --noconfirm )
 
   printf '%s  %s\n' "$sha" "$(basename "$url")" > "$outdir/vendor-deb.sha256"
   log "done: $(cd "$outdir" && ls ./*.pkg.tar.zst)"

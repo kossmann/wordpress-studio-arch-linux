@@ -64,7 +64,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: write
+      contents: write     # release assets + HISTORY.md
+      id-token: write     # build provenance attestation (Sigstore)
+      attestations: write
     steps:
       - name: Check out
         run: |
@@ -76,6 +78,13 @@ jobs:
         with:
           name: repo
           path: out
+
+      # Signed SLSA provenance: "this file was built by this workflow, at this
+      # commit". Users check it with: gh attestation verify <pkg> --repo <repo>
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: out/*.pkg.tar.zst
 
       - name: Sign and publish
         env:

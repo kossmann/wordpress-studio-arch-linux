@@ -30,6 +30,7 @@ for f in "${expected[@]}"; do
   [[ -f "$OUT/$f" && ! -L "$OUT/$f" ]] || die "$f is not a regular file"
 done
 grep -qxE '[A-Za-z0-9.:~+_-]{1,64}' "$OUT/vendor-debver" || die "bad vendor-debver"
+[[ "${SRC_URL:-}" =~ ^https://appscdn\.wordpress\.com/[A-Za-z0-9._/~+-]+\.deb$ ]] || die "bad SRC_URL: ${SRC_URL:-}"
 grep -qxE '[0-9a-f]{64}  studio-x64-v[A-Za-z0-9._~+-]+\.deb' "$OUT/vendor-deb.sha256" || die "bad vendor-deb.sha256"
 
 # The database must reference exactly this package's bytes.
@@ -73,11 +74,29 @@ Unofficial pacman repository for WordPress.com Studio. See the README for setup.
 
 **Current:** \`${PKGFILE%-x86_64.pkg.tar.zst}\`
 **Vendor version:** \`$(cat "$OUT/vendor-debver")\`
-**Built from:** ${SRC_URL:-$debname}
+**Built from:** $SRC_URL
 **Vendor .deb sha256:** \`$debsha\`
 **Package sha256:** \`$pkgsha\`
 **Signed by:** \`$fpr\`
 **Built:** $(date -u +%Y-%m-%dT%H:%MZ) by run ${GITHUB_SERVER_URL:-https://github.com}/$GITHUB_REPOSITORY/actions/runs/${GITHUB_RUN_ID:-?}
 EOF
 )"
+# 4. Append to HISTORY.md (via the contents API; retried if main moved).
+commit="${GITHUB_SHA:?}"
+server="${GITHUB_SERVER_URL:-https://github.com}"
+row="| $(date -u '+%Y-%m-%d %H:%M') | \`${PKGFILE%-x86_64.pkg.tar.zst}\` | \`$(cat "$OUT/vendor-debver")\` | ${SRC_URL:?} | \`$debsha\` | \`$pkgsha\` | [\`${commit:0:7}\`]($server/$GITHUB_REPOSITORY/commit/$commit) | [run]($server/$GITHUB_REPOSITORY/actions/runs/${GITHUB_RUN_ID:-0}) |"
+api="repos/$GITHUB_REPOSITORY/contents/HISTORY.md"
+for attempt in 1 2 3 4 5; do
+  cur_sha=$(gh api "$api?ref=main" -q .sha)
+  gh api "$api?ref=main" -q .content | base64 -d > "$OUT/HISTORY.md"
+  printf '%s\n' "$row" >> "$OUT/HISTORY.md"
+  if gh api -X PUT "$api" -f branch=main -f sha="$cur_sha" \
+       -f message="History: ${PKGFILE%-x86_64.pkg.tar.zst}" \
+       -f content="$(base64 -w0 < "$OUT/HISTORY.md")" >/dev/null; then
+    log "HISTORY.md updated"; break
+  fi
+  [[ $attempt == 5 ]] && die "could not update HISTORY.md"
+  sleep $((attempt * 3))
+done
+
 log "published $PKGFILE"
