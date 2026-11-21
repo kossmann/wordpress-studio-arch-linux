@@ -112,5 +112,5 @@ cat <<EOF
   using build.sh at commit $commit.
 
   Also check the build provenance (needs the gh CLI):
-    gh attestation verify "$pkg" --repo $REPO
+    gh attestation verify $([[ $# -ge 1 ]] && printf '"%s"' "$pkg" || printf '<the .pkg.tar.zst file>') --repo $REPO
 EOF
